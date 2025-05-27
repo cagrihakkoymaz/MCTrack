@@ -86,7 +86,6 @@ class KF_SIZE(KF_Base):
         self, n=4, m=2, dt=None, P=None, Q=None, R=None, init_x=None, cfg=None
     ):
         KF_Base.__init__(self, n=n, m=m, P=P, Q=Q, R=R, init_x=init_x, cfg=None)
-
         self.dt = dt
         self.JH = np.matrix([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
         self.F = self.getF(self.x)
@@ -193,7 +192,9 @@ class EKF_CV(KF_Base):
         # So observation Jacobian is identity matrix
         return self.JH
 
-    def update(self, z):
+    def update(self, z,track_id):
+        #print("cv : ")
+        #print("z : ",z)
         """
         Runs one step of the EKF on observations z, where z is a tuple of length M.
         Returns a NumPy array representing the updated state.
@@ -202,14 +203,37 @@ class EKF_CV(KF_Base):
         self.x = self.f(self.x)
         self.F = self.getF(self.x)
         self.P = self.F * self.P * self.F.T + self.Q
+        if(track_id==0):
+            print("self.Q",self.Q)
+            print("predict : ",self.x.flatten())
+            print("predict P",np.diag(self.P))
 
         # Update -----------------------------------------------------
-        G = self.P * self.H.T * np.linalg.inv(self.H * self.P * self.H.T + self.R)
+        S = self.H @ self.P @ self.H.T + self.R
+        print("S =\n", S)
+        print("det(S) =", np.linalg.det(S))
+        print("S shape =", S.shape)
+
+        S += 1e-6 * np.eye(S.shape[0])  # add epsilon to the diagonal
+        S_inv = np.linalg.inv(S)
+        G = self.P @ self.H.T @ S_inv       
+        #G = self.P * self.H.T * np.linalg.inv(self.H * self.P * self.H.T + self.R)
         self.x += G * (np.array(z) - self.h(self.x).T).T
         #         self.P = np.matmul(self.I - np.matmul(G, self.H), self.P)
         self.P = (self.I - np.matmul(G, self.H)) * self.P
         # return self.x.asarray()
+
+        if(track_id==0):
+            print("update : ",self.x.flatten())
+            print("update P",np.diag(self.P))
+
         return np.array(self.x.reshape(self.n))
+
+"""     def predict(self):
+        self.x = self.f(self.x)
+        self.F = self.getF(self.x)
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return np.array(self.x.reshape(self.n)) """
 
 
 class EKF_CA(KF_Base):
@@ -278,11 +302,21 @@ class EKF_CA(KF_Base):
         self.P = self.F * self.P * self.F.T + self.Q
 
         # Update -----------------------------------------------------
-        G = self.P * self.H.T * np.linalg.inv(self.H * self.P * self.H.T + self.R)
+        S = self.H @ self.P @ self.H.T + self.R
+        S += 1e-6 * np.eye(S.shape[0])  # add epsilon to the diagonal
+        S_inv = np.linalg.inv(S)
+        G = self.P @ self.H.T @ S_inv
+        #G = self.P * self.H.T * np.linalg.inv(self.H * self.P * self.H.T + self.R)
         self.x += G * (np.array(z) - self.h(self.x).T).T
         #         self.P = np.matmul(self.I - np.matmul(G, self.H), self.P)
         self.P = (self.I - np.matmul(G, self.H)) * self.P
         # return self.x.asarray()
+        return np.array(self.x.reshape(self.n))
+
+    def predict(self):
+        self.x = self.f(self.x)
+        self.F = self.getF(self.x)
+        self.P = self.F @ self.P @ self.F.T + self.Q
         return np.array(self.x.reshape(self.n))
 
 
@@ -328,6 +362,9 @@ class EKF_CTRA(KF_Base):
         return x_fil
 
     def getF(self, x):
+        beta = x[4].item(0)
+        beta_eps = beta if abs(beta) > 1e-3 else 1e-3
+        x[4]=beta_eps
         # So state-transition Jacobian is identity matrix
         dt = self.dt
         a13 = (
@@ -422,7 +459,7 @@ class EKF_CTRA(KF_Base):
         )
         return F
 
-    def update(self, z):
+    def update(self, z,track_id):
         """
         Runs one step of the EKF on observations z, where z is a tuple of length M.
         Returns a NumPy array representing the updated state.
@@ -433,7 +470,22 @@ class EKF_CTRA(KF_Base):
         self.P = self.F * self.P * self.F.T + self.Q
 
         # Update -----------------------------------------------------
-        G = self.P * self.H.T * np.linalg.inv(self.H * self.P * self.H.T + self.R)
+        # Update -----------------------------------------------------
+        S = self.H @ self.P @ self.H.T + self.R
+        print("F:\n", self.F)    
+        print("Q:\n", self.Q)    
+
+        print("H:\n", self.H)
+        print("P:\n", self.P)
+        print("R:\n", self.R)
+
+        print("S =\n", S)
+        print("det(S) =", np.linalg.det(S))
+        print("S shape =", S.shape)
+        S += 1e-6 * np.eye(S.shape[0])  # add epsilon to the diagonal
+        S_inv = np.linalg.inv(S)
+        G = self.P @ self.H.T @ S_inv
+        #G = self.P * self.H.T * np.linalg.inv(self.H * self.P * self.H.T + self.R)    
         self.x += G * (np.array(z) - self.h(self.x).T).T
         #         self.P = np.matmul(self.I - np.matmul(G, self.H), self.P)
         self.P = (self.I - np.matmul(G, self.H)) * self.P
@@ -517,3 +569,77 @@ class EKF_RVBOX(KF_Base):
         self.P = (self.I - np.matmul(G, self.H)) * self.P
         # return self.x.asarray()
         return np.array(self.x.reshape(self.n))
+class WrappedCV:
+    def __init__(self, ekf):
+        self.model = ekf
+        self.X = ekf.x
+        self.P = ekf.P
+        self.H = ekf.H
+        self.R = ekf.R
+        self.X_pre = None
+        self.P_pre = None
+
+    def filt(self, Z,track_id):
+        #print("self.X_pre",self.X_pre)
+        #print("self.model.x",self.model.x)
+        self.model.x=self.X.reshape(4, 1)
+        self.model.P=self.P
+        self.X_pre = self.model.f(self.model.x)
+
+        self.P_pre = self.model.getF(self.model.x) @ self.model.P @ self.model.getF(self.model.x).T + self.model.Q
+        self.X = self.model.update(Z,track_id)
+        self.P = self.model.P
+        self.H = self.model.getH(self.X)
+        self.R = self.model.R
+    def assign_mixed_values(self):
+        self.model.x=self.X
+        self.model.P=self.P
+                
+class WrappedCA:
+    def __init__(self, ekf):
+        self.model = ekf
+        self.X = ekf.x
+        self.P = ekf.P
+        self.H = ekf.H
+        self.R = ekf.R
+        self.X_pre = None
+        self.P_pre = None
+
+    def filt(self, Z):
+        #print("self.X_pre",self.X_pre)
+        #print("self.model.x",self.model.x)
+        self.model.x=self.X.reshape(6, 1)
+        self.model.P=self.P
+        self.X_pre = self.model.f(self.model.x)
+
+        self.P_pre = self.model.getF(self.model.x) @ self.model.P @ self.model.getF(self.model.x).T + self.model.Q
+        self.X = self.model.update(Z)
+        self.P = self.model.P
+        self.H = self.model.getH(self.X)
+        self.R = self.model.R
+    def assign_mixed_values(self):
+        self.model.x=self.X
+        self.model.P=self.P        
+class WrappedCTRA:
+    def __init__(self, ekf):
+        self.model = ekf
+        self.X = ekf.x
+        self.P = ekf.P
+        self.H = ekf.H
+        self.R = ekf.R
+        self.X_pre = None
+        self.P_pre = None
+
+    def filt(self, Z,track_id):
+        self.model.x=self.X.reshape(6, 1)
+        self.model.P=self.P
+        self.X_pre = self.model.f(self.model.x)
+        self.P_pre = self.model.getF(self.model.x) @ self.model.P @ self.model.getF(self.model.x).T + self.model.Q
+        self.X = self.model.update(Z,track_id)
+        self.P = self.model.P
+        self.H = self.model.getH(self.X)
+        self.R = self.model.R        
+
+    def assign_mixed_values(self):
+        self.model.x=self.X
+        self.model.P=self.P

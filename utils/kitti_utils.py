@@ -209,7 +209,15 @@ def save_scene_results(scene_id, scene_result, cfg):
                         f"{kitti_bbox_3d[6]:.4f} {bbox.det_score:.4f}\n"
                     )
                     file.write(str_to_write)
-
+                    # Write extra comparison log                    
+                    log_path = os.path.join(save_path, scene_id + "_compare.txt")
+                    with open(log_path, "a") as log_file:
+                        log_file.write(
+                            f"frame={frame_id} id={track_id} cat={bbox.category} "
+                            f"x={bbox.global_xyz[0]:.3f} y={bbox.global_xyz[1]:.3f} z={bbox.global_xyz[2]:.3f} "
+                            f"yaw={bbox.global_yaw:.3f} score={bbox.det_score:.2f} "
+                            f"l={bbox.lwh[0]:.3f} w={bbox.lwh[1]:.3f} h={bbox.lwh[2]:.3f}\n"
+                        )
 
 def save_results_kitti(tracking_results, cfg):
     for scene_id in sorted(tracking_results.keys()):

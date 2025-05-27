@@ -4,11 +4,78 @@
 
 import numpy as np
 import copy
+import sys
 
 from .bbox import BBox
 from typing import List
 from kalmanfilter.extend_kalman import *
 from scipy.optimize import curve_fit
+from kalmanfilter.imm_filter import Imm  # adjust path as needed
+
+T_cv_to_ca = np.array([
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [0, 0, 1, 0],
+    [0, 0, 0, 1],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+])
+
+
+T_cv_to_ctra = np.array([
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [0, 0, 1, 0],
+    [0, 0, 0, 1],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+])
+
+# Project CA -> CV: take first 4 elements
+T_ca_to_cv = np.array([
+    [1, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0]
+])
+
+# Project CA -> CV: take first 4 elements
+T_ctra_to_cv = np.array([
+    [1, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0]
+])
+
+
+model_trans_cv_ca = [
+    [np.eye(4), T_ctra_to_cv],
+    [T_cv_to_ca, np.eye(6)]
+]
+
+
+# Project CA/CTRA -> fusion 4D state: [x, y, vx, vy]
+T_ca_to_fusion = np.array([
+    [1, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0]
+])
+T_ctra_to_fusion = np.array([
+    [1, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0],  # v * cos(yaw) approx for vx
+    [0, 0, 0, 1, 0, 0],  # v * sin(yaw) approx for vy
+])
+
+model_trans = [
+    [np.eye(6), T_ctra_to_fusion],  # From CA, CTRA → fusion
+    [T_ca_to_fusion, np.eye(6)]     # From fusion → CA, CTRA
+]
+
+
+
+use_imm=True
 
 np.set_printoptions(formatter={"float": "{:0.4f}".format})
 
@@ -25,7 +92,6 @@ class Trajectory:
     ):
         self.track_id = track_id
         self.category_num = cfg["CATEGORY_MAP_TO_NUMBER"][init_bbox.category]
-
         self.first_bbox = first_bbox
         self.track_length = 1
         self.unmatch_length = 0
@@ -121,14 +187,72 @@ class Trajectory:
             R=np.diag(cfg["KALMAN_FILTER_SIZE"]["CV"]["NOISE"][self.category_num]["R"]),
             init_x=cv_init_size,
         )
-        
-        if cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CV":
-            self.kalman_filter_pose = self.cv_filter_pose
-        elif cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CA":
-            self.kalman_filter_pose = self.ca_filter_pose 
-        elif cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CTRA":
-            self.kalman_filter_pose = self.ctra_filter_pose 
-        
+
+        if (use_imm):
+           # Initialize the CV (Constant Velocity) filter with proper parameters
+            n_cv = 4  # State dimension for CV model [x, y, vx, vy]
+            m_cv = 2  # Measurement dimension [x, y]
+            dt = 0.1  # Time step (adjust based on your frame rate)
+            P_cv = np.eye(n_cv) * 1*[1, 1, 500, 500]
+            #print("P_CV",P_cv)
+             # Initial state covariance
+            Q_cv =  np.diag([0.5, 0.5, 5, 5]) # Process noise covariance (adjust for your scenario)
+            R_cv = np.eye(m_cv) * 5  # Measurement noise covariance
+            init_x_cv = np.zeros((n_cv, 1))  # Initial state
+
+            cv_filter = EKF_CV(n=n_cv, m=m_cv, dt=dt, P=P_cv, Q=Q_cv, R=R_cv, init_x=cv_init_pose)
+
+            # Initialize the CA (Constant Acceleration) filter with proper parameters
+            n_ca = 6  # State dimension for CA model [x, y, vx, vy, ax, ay]
+            m_ca = 2  # Measurement dimension [x, y]
+            P_ca = np.eye(n_ca) * 10.0  # Initial state covariance
+            Q_ca = np.diag([2.5, 2.5, 5.0, 5.5, 5.0, 5.5]) # Process noise (higher for acceleration)
+            R_ca = np.eye(m_ca) * 5 # Same measurement noise
+            init_x_ca = np.zeros((n_ca, 1))  # Initial state
+            #print("ca_init_pose",ca_init_pose)
+            #print("cv_init_pose",cv_init_pose)
+
+            ca_filter = EKF_CA(n=n_ca, m=m_ca, dt=dt, P=P_ca, Q=Q_ca, R=R_ca, init_x=ca_init_pose)
+
+            ctra_filter = EKF_CTRA(n=n_ca, m=m_ca, dt=dt, P=P_ca, Q=Q_ca, R=R_ca, init_x=ctra_init_pose)
+
+            # Wrap the filters
+            wrapped_cv = WrappedCV(cv_filter)
+            wrapped_ca = WrappedCA(ca_filter)
+            wrapped_ctra = WrappedCTRA(ctra_filter)
+
+            # Set up the IMM filter
+            models = [wrapped_cv, wrapped_ctra]
+
+            # Transition probability matrix
+            P_trans = np.array([
+                [0.95, 0.05],
+                [0.05, 0.95]
+            ])
+
+            # Initial mode probabilities
+            U_prob = np.array([
+                [0.5],
+                [0.5]
+            ])
+
+            # Initialize the IMM filter
+            # Note: I fixed a potential issue - 'model_trans' was not defined earlier
+            self.kalman_filter_pose = Imm(models, model_trans_cv_ca, P_trans, U_prob)            
+
+        else:
+            if cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CV":
+                print("used cv")
+                self.kalman_filter_pose = self.cv_filter_pose
+            elif cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CA":
+                self.kalman_filter_pose = self.ca_filter_pose 
+                print("used ca")
+
+            elif cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CTRA":
+                self.kalman_filter_pose = self.ctra_filter_pose 
+                #print("used ctra")
+
+ 
         # if cfg["IS_RV_MATCHING"]:
         #     xywh = init_bbox.transform_bbox_tlbr2xywh()
         #     init_rvbox = np.array(xywh.tolist() + [0.0, 0.0, 0.0, 0.0])
@@ -166,7 +290,15 @@ class Trajectory:
         return measure
     
     def predict(self):
-        predict_state = self.kalman_filter_pose.predict()
+        if(self.track_id==0):
+            print("===========predict start  for object:     =================",self.track_id)
+            #print("init_bbox.frame_id",init_bbox.frame_id)
+        if (use_imm):
+            predict_state = self.kalman_filter_pose.get_fused_state()
+        else:
+            predict_state = self.kalman_filter_pose.predict()
+        #print("predict_state",predict_state)    
+    
         predict_yaw = self.kalman_filter_yaw.predict()
         predict_size = self.kalman_filter_size.predict()
         # if self.cfg["IS_RV_MATCHING"]:
@@ -182,8 +314,11 @@ class Trajectory:
 
         self.bboxes[-1].global_yaw_fusion = predict_yaw[0]
         self.bboxes[-1].lwh_fusion = predict_lwh   
+        #print("===========update start :     =================")
 
     def update(self, bbox: BBox, matched_score):
+        #print("===========update start :     =================")
+
         bbox.track_id = self.track_id
         self.track_length += 1
         bbox.track_length = self.track_length
@@ -203,11 +338,22 @@ class Trajectory:
         
         # ======== pose filter ==========
         pose_mesure = self.get_measure(bbox, filter_flag="pose")   
-        if self.kalman_filter_pose.m == 2:
-            pose_mesure = pose_mesure[:2]
-        update_state = self.kalman_filter_pose.update(pose_mesure)
+        #if self.kalman_filter_pose.m == 2:
+        pose_mesure = pose_mesure[:2]
+        if(self.track_id==0):
+            print("measurement  :" ,pose_mesure)
+
+        if(use_imm):
+            self.kalman_filter_pose.filt(pose_mesure,self.track_id)
+            #print("pose_mesure :" ,pose_mesure)
+            update_state = self.kalman_filter_pose.get_fused_state()      
+        else:
+            update_state = self.kalman_filter_pose.update(pose_mesure,self.track_id)
+        if(self.track_id==0):
+            print("update_state",update_state)    
+
         self.bboxes[-1].global_velocity_fusion = update_state[2:4].tolist()
-        
+        #print("update_state[2:4].tolist()",update_state[2:4].tolist())
         # ======== yaw filter ==========
         yaw_mesure = self.get_measure(bbox, filter_flag="yaw")
         update_yaw = self.kalman_filter_yaw.update(yaw_mesure)
@@ -237,23 +383,40 @@ class Trajectory:
             and self.bboxes[-1].det_score > self._confirmed_det_score
         ):
             self.status_flag = 1
+        #print("===========update end :     =================")
 
         return self.bboxes[-1]
 
     def unmatch_update(self, frame_id):
-        self.unmatch_length += 1
+        #print("===========unmatch_update :     =================")
 
-        predict_state = self.kalman_filter_pose.predict()
+        self.unmatch_length += 1
+        if(use_imm):
+            
+            predict_state = self.kalman_filter_pose.get_fused_state()
+        else:
+            predict_state = self.kalman_filter_pose.predict()
+        #print("fake predict_state",predict_state)    
+            
         predict_yaw = self.kalman_filter_yaw.predict()
         predict_size = self.kalman_filter_size.predict()
         # if self.cfg["IS_RV_MATCHING"]:
         #     predict_rvbox = self.kalman_filter_rvbox.predict()
         #     fake_update_rvbox = self.kalman_filter_rvbox.update(predict_rvbox[:4])
-        if self.kalman_filter_pose.m == 2:
-            predict_state = predict_state[:2]
-        fake_update_state = self.kalman_filter_pose.update(predict_state)
+        #if self.kalman_filter_pose.m == 2:
+        predict_state = predict_state[:2]
+        if(use_imm):
+            #print("predict_state :" ,predict_state)
+
+            self.kalman_filter_pose.filt(predict_state,self.track_id)
+            fake_update_state = self.kalman_filter_pose.get_fused_state()           
+        else:
+            fake_update_state = self.kalman_filter_pose.update(predict_state,self.track_id)
         # fake_update_yaw = self.kalman_filter_yaw.update(predict_yaw[:2])
         # fake_update_size = self.kalman_filter_size.update(predict_size[:2])
+        if(self.track_id==0):
+
+            print("fake_update_state",fake_update_state)    
 
         fake_bbox = copy.deepcopy(self.bboxes[-1])
         fake_bbox.det_score = 0
@@ -286,6 +449,7 @@ class Trajectory:
 
         if self.status_flag == 2 and self.unmatch_length > self._max_predict_len:
             self.status_flag = 4
+        #print("===========unmatch_end :     =================")
 
         return
 

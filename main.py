@@ -17,14 +17,19 @@ from dataset.baseversion_dataset import BaseVersionTrackingDataset
 from evaluation.static_evaluation.kitti.evaluation_HOTA.scripts.run_kitti import (
     eval_kitti,
 )
+import sys
+
 from evaluation.static_evaluation.nuscenes.eval import eval_nusc
 from evaluation.static_evaluation.waymo.eval import eval_waymo
 from utils.kitti_utils import save_results_kitti
 from utils.nusc_utils import save_results_nuscenes, save_results_nuscenes_for_motion
 from utils.waymo_utils.convert_result import save_results_waymo
+from playsound import playsound
 
 
 def run(scene_id, scenes_data, cfg, args, tracking_results):
+    ##print("--------Running  START-------------")
+
     """
     Info: This function tracks objects in a given scene, processes frame data, and stores tracking results.
     Parameters:
@@ -38,6 +43,15 @@ def run(scene_id, scenes_data, cfg, args, tracking_results):
             tracking_results: Updated tracking results for the scene.
     """
     scene_data = scenes_data[scene_id]
+    ##print("--------SCENE DATA  START-------------")
+    ##print(len(scene_data))
+    #print(type(scene_data))
+    #print(type(scene_data[0]))
+    #print((scene_data[0]))
+    #print((scene_data[2]))
+
+    ##print("--------SCENE DATA END-------------")
+
     dataset = BaseVersionTrackingDataset(scene_id, scene_data, cfg=cfg)
     tracker = Base3DTracker(cfg=cfg)
     all_trajs = {}
@@ -45,6 +59,7 @@ def run(scene_id, scenes_data, cfg, args, tracking_results):
     for index in tqdm(range(len(dataset)), desc=f"Processing {scene_id}"):
         frame_info = dataset[index]
         frame_id = frame_info.frame_id
+        print("frame_id : ",frame_id)
         cur_sample_token = frame_info.cur_sample_token
         all_traj = tracker.track_single_frame(frame_info)
         result_info = {
@@ -83,7 +98,8 @@ def run(scene_id, scenes_data, cfg, args, tracking_results):
                     and det_score <= cfg["THRESHOLD"]["GLOBAL_TRACK_SCORE"]
                 ):
                     del all_trajs[frame_id]["trajs"][track_id]
-
+    print("scene id",scene_id)
+    #print("all_trajs",all_trajs)
     tracking_results[scene_id] = all_trajs
 
 
@@ -127,6 +143,7 @@ if __name__ == "__main__":
     detections_root = os.path.join(
         cfg["DETECTIONS_ROOT"], cfg["DETECTOR"], cfg["SPLIT"] + ".json"
     )
+    #print(cfg)
     with open(detections_root, "r", encoding="utf-8") as file:
         print(f"Loading data from {detections_root}...")
         data = json.load(file)
@@ -141,6 +158,20 @@ if __name__ == "__main__":
             scene_lists = [scene_id for scene_id in data.keys()][:2]
     else:
         scene_lists = [scene_id for scene_id in data.keys()]
+    """
+    print("--------------------scene list   start-----------------------------------------------")
+    print(type(scene_lists))
+    print(len(scene_lists))
+    print(type(scene_lists[0]))
+
+    print(len(scene_lists[0]))
+    print((scene_lists[0]))
+    print((scene_lists[1]))
+    print((scene_lists[2]))
+
+
+    print("--------------------scene list end-----------------------------------------------")    
+    """
 
     manager = multiprocessing.Manager()
     tracking_results = manager.dict()
@@ -154,9 +185,31 @@ if __name__ == "__main__":
         pool.join()
     else:
         for scene_id in tqdm(scene_lists, desc="Running scenes"):
+            print("************************************************************************")
+            print("scene id ",scene_id)
+            if int(scene_id)==1:
+                print("First scene finish")
+                
+                #sys.exit(1)
             run(scene_id, data, cfg, args, tracking_results)
-    tracking_results = dict(tracking_results)
 
+    for scene_id in tqdm(scene_lists, desc="Running scenes"):
+            """
+            print("--------SCENE DATA ID : -------------")
+            print(scene_id)            
+            #print("--------Data-------------")
+            print(type(data))
+            print(len(data))
+            #print((data.keys()))
+            #print(type(data[scene_id]))
+            print(len(data[scene_id]))
+            #print(type(data[scene_id][0]))
+            print(len(data[scene_id][0]))
+            print(tracking_results)
+            """
+
+    tracking_results = dict(tracking_results)
+    #print(tracking_results,"tracking results:")
     if args.dataset == "kitti":
         save_results_kitti(tracking_results, cfg)
         if args.eval:
