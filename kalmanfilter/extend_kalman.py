@@ -203,16 +203,17 @@ class EKF_CV(KF_Base):
         self.x = self.f(self.x)
         self.F = self.getF(self.x)
         self.P = self.F * self.P * self.F.T + self.Q
-        if(track_id==0):
-            print("self.Q",self.Q)
-            print("predict : ",self.x.flatten())
-            print("predict P",np.diag(self.P))
+        
+        #if(track_id==0):
+        #    print("self.Q",self.Q)
+        #    print("predict : ",self.x.flatten())
+        #    print("predict P",np.diag(self.P))
 
         # Update -----------------------------------------------------
         S = self.H @ self.P @ self.H.T + self.R
-        print("S =\n", S)
-        print("det(S) =", np.linalg.det(S))
-        print("S shape =", S.shape)
+        #print("S =\n", S)
+        #print("det(S) =", np.linalg.det(S))
+        #print("S shape =", S.shape)
 
         S += 1e-6 * np.eye(S.shape[0])  # add epsilon to the diagonal
         S_inv = np.linalg.inv(S)
@@ -223,9 +224,9 @@ class EKF_CV(KF_Base):
         self.P = (self.I - np.matmul(G, self.H)) * self.P
         # return self.x.asarray()
 
-        if(track_id==0):
-            print("update : ",self.x.flatten())
-            print("update P",np.diag(self.P))
+        #if(track_id==0):
+        #    print("update : ",self.x.flatten())
+        #    print("update P",np.diag(self.P))
 
         return np.array(self.x.reshape(self.n))
 
