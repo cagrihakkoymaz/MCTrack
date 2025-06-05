@@ -158,6 +158,7 @@ if __name__ == "__main__":
             scene_lists = [scene_id for scene_id in data.keys()][:2]
     else:
         scene_lists = [scene_id for scene_id in data.keys()]
+        scene_lists = [str(scene_id).zfill(4) for scene_id in cfg["TRACKING_SEQS"]]
     """
     print("--------------------scene list   start-----------------------------------------------")
     print(type(scene_lists))
