@@ -75,8 +75,9 @@ model_trans = [
 
 
 
-use_imm=True
-
+use_imm=False
+is_analyze_track=False
+analyzed_track_id=0
 np.set_printoptions(formatter={"float": "{:0.4f}".format})
 
 def linear_func(x, a, b):
@@ -102,6 +103,10 @@ class Trajectory:
         self.cfg = cfg
         self.bboxes: List[BBox] = [init_bbox]
         self.matched_scores = []
+        self.imm_prob_history = []  # (frame_id, CV_prob, CTRA_prob)
+        self.measurements = []  # measurements
+        self.motion_updates = []  # motion_updates
+        self.measurement_updates = []  # measurement_updates
 
         cv_init_pose = np.array(init_bbox.global_xyz_lwh_yaw[:2] + init_bbox.global_velocity)
         ca_init_pose = np.array(init_bbox.global_xyz_lwh_yaw[:2] + [0, 0, 0, 0])
@@ -197,7 +202,7 @@ class Trajectory:
             #print("P_CV",P_cv)
              # Initial state covariance
             Q_cv =  np.diag([0.5, 0.5, 5, 5]) # Process noise covariance (adjust for your scenario)
-            R_cv = np.eye(m_cv) * 5  # Measurement noise covariance
+            R_cv = np.eye(m_cv) * 100  # Measurement noise covariance
             init_x_cv = np.zeros((n_cv, 1))  # Initial state
 
             cv_filter = EKF_CV(n=n_cv, m=m_cv, dt=dt, P=P_cv, Q=Q_cv, R=R_cv, init_x=cv_init_pose)
@@ -206,8 +211,8 @@ class Trajectory:
             n_ca = 6  # State dimension for CA model [x, y, vx, vy, ax, ay]
             m_ca = 2  # Measurement dimension [x, y]
             P_ca = np.eye(n_ca) * 10.0  # Initial state covariance
-            Q_ca = np.diag([2.5, 2.5, 5.0, 5.5, 5.0, 5.5]) # Process noise (higher for acceleration)
-            R_ca = np.eye(m_ca) * 5 # Same measurement noise
+            Q_ca = np.diag([2.0, 2.0, 1.0, 0.5, 1.0, 1.5]) # Process noise (higher for acceleration)
+            R_ca = np.eye(m_ca) * 100 # Same measurement noise
             init_x_ca = np.zeros((n_ca, 1))  # Initial state
             #print("ca_init_pose",ca_init_pose)
             #print("cv_init_pose",cv_init_pose)
@@ -242,11 +247,11 @@ class Trajectory:
 
         else:
             if cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CV":
-                print("used cv")
+                #print("used cv")
                 self.kalman_filter_pose = self.cv_filter_pose
             elif cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CA":
                 self.kalman_filter_pose = self.ca_filter_pose 
-                print("used ca")
+                #print("used ca")
 
             elif cfg["KALMAN_FILTER_POSE"]["MOTION_MODE"][self.category_num] == "CTRA":
                 self.kalman_filter_pose = self.ctra_filter_pose 
@@ -290,15 +295,21 @@ class Trajectory:
         return measure
     
     def predict(self):
-        if(self.track_id==0):
-            print("===========predict start  for object:     =================",self.track_id)
-            #print("init_bbox.frame_id",init_bbox.frame_id)
+
+        #if(self.track_id==analyzed_track_id and is_analyze_track):
+        #    print("===========predict start  for object:     =================",self.track_id)
+        #    print("init_bbox.frame_id",init_bbox.frame_id)
         if (use_imm):
             predict_state = self.kalman_filter_pose.get_fused_state()
+            #self.motion_updates.append(predict_state[:2])
+
         else:
             predict_state = self.kalman_filter_pose.predict()
-        #print("predict_state",predict_state)    
-    
+
+        print("append motion update results")    
+        print(len(self.motion_updates))    
+
+        self.motion_updates.append(predict_state[:2])
         predict_yaw = self.kalman_filter_yaw.predict()
         predict_size = self.kalman_filter_size.predict()
         # if self.cfg["IS_RV_MATCHING"]:
@@ -318,6 +329,7 @@ class Trajectory:
 
     def update(self, bbox: BBox, matched_score):
         #print("===========update start :     =================")
+        print(f"[Track ID {self.track_id} | Frame {bbox.frame_id}]")                 
 
         bbox.track_id = self.track_id
         self.track_length += 1
@@ -335,21 +347,47 @@ class Trajectory:
         self.bboxes[-1].global_velocity_diff = global_velocity_diff
         global_velocity_curve = self.cal_curve_velocity()
         self.bboxes[-1].global_velocity_curve = global_velocity_curve
-        
         # ======== pose filter ==========
         pose_mesure = self.get_measure(bbox, filter_flag="pose")   
-        #if self.kalman_filter_pose.m == 2:
         pose_mesure = pose_mesure[:2]
-        if(self.track_id==0):
+        self.measurements.append(pose_mesure)
+        print("append measurement ")
+        print(len(self.measurements))
+
+        if(self.track_id==analyzed_track_id and is_analyze_track):
             print("measurement  :" ,pose_mesure)
 
         if(use_imm):
             self.kalman_filter_pose.filt(pose_mesure,self.track_id)
             #print("pose_mesure :" ,pose_mesure)
-            update_state = self.kalman_filter_pose.get_fused_state()      
+            update_state = self.kalman_filter_pose.get_fused_state() 
+            prob_vec = self.kalman_filter_pose.U_prob.ravel()
+            self.imm_prob_history.append((bbox.frame_id, prob_vec[0], prob_vec[1]))
+            predict_state = self.kalman_filter_pose.get_fused_state()
+            self.motion_updates.append(predict_state[:2])
+            print(len(self.motion_updates))    
+
+            print(type(pose_mesure))
+            print(len(self.measurements))
+            print(pose_mesure)
+            print(type(update_state[:2]))
+            print(update_state[:2])
+            print("motion updates")    
+
+            print("types")
+            #self.measurement_updates.append(update_state[:2])
+
+            model_label = "CV" if prob_vec[0] > 0.5 else "CTRA"
+            print(f"[Track ID {self.track_id} | Frame {bbox.frame_id}] IMM mode probabilities: {prob_vec} → Dominant: {model_label}")                 
         else:
+
             update_state = self.kalman_filter_pose.update(pose_mesure,self.track_id)
-        if(self.track_id==0):
+
+        self.measurement_updates.append(update_state[:2])
+        print("append measurement update")
+        print(len(self.measurement_updates))
+
+        if(self.track_id==analyzed_track_id and is_analyze_track):
             print("update_state",update_state)    
 
         self.bboxes[-1].global_velocity_fusion = update_state[2:4].tolist()
@@ -414,9 +452,9 @@ class Trajectory:
             fake_update_state = self.kalman_filter_pose.update(predict_state,self.track_id)
         # fake_update_yaw = self.kalman_filter_yaw.update(predict_yaw[:2])
         # fake_update_size = self.kalman_filter_size.update(predict_size[:2])
-        if(self.track_id==0):
-
-            print("fake_update_state",fake_update_state)    
+        if(self.track_id==analyzed_track_id and is_analyze_track):
+            pass
+            #print("fake_update_state",fake_update_state)    
 
         fake_bbox = copy.deepcopy(self.bboxes[-1])
         fake_bbox.det_score = 0
